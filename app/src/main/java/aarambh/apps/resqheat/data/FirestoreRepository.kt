@@ -2,6 +2,7 @@ package aarambh.apps.resqheat.data
 
 import aarambh.apps.resqheat.model.Request
 import aarambh.apps.resqheat.model.RequestStatus
+import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.ktx.toObject
@@ -27,13 +28,23 @@ class FirestoreRepository(
             updatedAt = nowMillis
         )
 
-        docRef.set(requestToSave).await()
+        try {
+            docRef.set(requestToSave).await()
+        } catch (e: Exception) {
+            Log.e("FirestoreRepository", "createRequest failed", e)
+            throw e
+        }
         return docRef.id
     }
 
-    fun listenToAllRequests(callback: (List<Request>) -> Unit): ListenerRegistration {
+    fun listenToAllRequests(callback: (List<Request>) -> Unit, onError: (Exception) -> Unit = {}): ListenerRegistration {
         return firestore.collection(collectionName)
-            .addSnapshotListener { snapshot, _ ->
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) {
+                    Log.e("FirestoreRepository", "listenToAllRequests error", e)
+                    onError(e)
+                    return@addSnapshotListener
+                }
                 if (snapshot == null) {
                     callback(emptyList())
                     return@addSnapshotListener
@@ -50,7 +61,12 @@ class FirestoreRepository(
             "status" to RequestStatus.BEING_SERVED.name,
             "updatedAt" to System.currentTimeMillis()
         )
-        docRef.update(updates).await()
+        try {
+            docRef.update(updates).await()
+        } catch (e: Exception) {
+            Log.e("FirestoreRepository", "claimRequest failed", e)
+            throw e
+        }
     }
 
     suspend fun completeRequest(requestId: String) {
@@ -59,7 +75,12 @@ class FirestoreRepository(
             "status" to RequestStatus.SERVED.name,
             "updatedAt" to System.currentTimeMillis()
         )
-        docRef.update(updates).await()
+        try {
+            docRef.update(updates).await()
+        } catch (e: Exception) {
+            Log.e("FirestoreRepository", "completeRequest failed", e)
+            throw e
+        }
     }
 }
 

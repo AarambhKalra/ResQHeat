@@ -27,6 +27,7 @@ data class Request(
     val lng: Double = 0.0,
     val priority: Priority = Priority.MEDIUM,
     val status: RequestStatus = RequestStatus.NOT_SERVED,
+    val createdByUid: String = "",
     val claimedBy: String? = null,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
