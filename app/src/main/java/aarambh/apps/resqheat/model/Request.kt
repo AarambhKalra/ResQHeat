@@ -29,6 +29,9 @@ data class Request(
     val status: RequestStatus = RequestStatus.NOT_SERVED,
     val createdByUid: String = "",
     val claimedBy: String? = null,
+    val claimedByNgoName: String? = null,
+    val claimedByNgoPhone: String? = null,
+    val eta: String? = null,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
     val estimatedDaysCovered: Int? = null

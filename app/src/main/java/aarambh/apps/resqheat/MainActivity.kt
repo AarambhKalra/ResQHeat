@@ -11,12 +11,18 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import aarambh.apps.resqheat.ui.theme.ResQHeatTheme
 import aarambh.apps.resqheat.ui.home.HomeScreen
+import aarambh.apps.resqheat.ui.profile.ProfileScreen
 import aarambh.apps.resqheat.data.FirestoreRepository
 import aarambh.apps.resqheat.data.UserRepository
+import aarambh.apps.resqheat.data.SafeShelterDataUploader
 import aarambh.apps.resqheat.model.UserProfile
 import aarambh.apps.resqheat.model.UserRole
 import aarambh.apps.resqheat.ui.auth.RolePickerDialog
@@ -38,11 +44,37 @@ import androidx.lifecycle.lifecycleScope
 import com.google.firebase.auth.ktx.auth
 import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.withContext
+import aarambh.apps.resqheat.utils.NotificationHelper
+import android.os.Build
 
 class MainActivity : ComponentActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var lastLat: Double? = null
     private var lastLng: Double? = null
+
+    private fun fetchLastLocation() {
+        if (::fusedLocationClient.isInitialized) {
+            fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    lastLat = loc.latitude
+                    lastLng = loc.longitude
+                }
+            }
+        }
+    }
+
+    private fun ensureLocationPermission() {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (fine || coarse) {
+            fetchLastLocation()
+        } else {
+            locationPermissionLauncher.launch(arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ))
+        }
+    }
 
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -53,9 +85,30 @@ class MainActivity : ComponentActivity() {
             fetchLastLocation()
         }
     }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d("MainActivity", "Notification permission granted")
+        } else {
+            Log.w("MainActivity", "Notification permission denied")
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        
+        // Create notification channel
+        NotificationHelper.createNotificationChannel(this)
+        
+        // Request notification permission for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         ensureLocationPermission()
         // Kick off anonymous auth (non-blocking). We will also enforce auth before writes.
@@ -68,6 +121,43 @@ class MainActivity : ComponentActivity() {
                     Toast.LENGTH_LONG
                 ).show()
             }
+        
+        // TODO: Remove this after uploading shelters once - it uploads 3 example safe shelters
+        // COMMENTED OUT - Shelters already uploaded. Uncomment to re-upload if needed.
+        /*
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                // Wait for Firebase to be ready and auth to complete
+                Log.d("MainActivity", "Waiting for Firebase initialization...")
+                Firebase.auth.signInAnonymously().await()
+                Log.d("MainActivity", "Firebase auth ready, starting shelter upload...")
+                
+                val uploader = SafeShelterDataUploader()
+                uploader.uploadExampleShelters()
+                Log.d("MainActivity", "Successfully uploaded example safe shelters")
+                
+                // Show toast on main thread
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Safe shelters uploaded successfully!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to upload safe shelters", e)
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Failed to upload shelters: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+        */
+        
         setContent {
             ResQHeatTheme {
                 val repo = FirestoreRepository()
@@ -75,6 +165,8 @@ class MainActivity : ComponentActivity() {
                 val snackbarHostState = androidx.compose.runtime.remember { SnackbarHostState() }
                 val userProfileState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<UserProfile?>(null) }
                 val showRoleDialog = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                val showProfileScreen = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                var isSavingProfile by remember { mutableStateOf(false) }
 
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     // Ensure auth and load profile; if anything fails, show role dialog
@@ -106,9 +198,41 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
                 ) { innerPadding ->
-                    HomeScreen(
-                        onAddRequest = { /* handled in dialog submit */ },
-                        onSubmitRequest = { request, selectedLat, selectedLng ->
+                    if (showProfileScreen.value) {
+                        ProfileScreen(
+                            userProfile = userProfileState.value,
+                            onBackClick = { showProfileScreen.value = false },
+                            onSave = { updatedProfile ->
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    isSavingProfile = true
+                                    try {
+                                        userRepo.setUserProfile(updatedProfile)
+                                        withContext(Dispatchers.Main) {
+                                            userProfileState.value = updatedProfile
+                                            isSavingProfile = false
+                                            showProfileScreen.value = false
+                                            snackbarHostState.showSnackbar(
+                                                message = "Profile updated successfully"
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Failed to save profile", e)
+                                        withContext(Dispatchers.Main) {
+                                            isSavingProfile = false
+                                            snackbarHostState.showSnackbar(
+                                                message = "Failed to save profile: ${e.message}"
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            isLoading = isSavingProfile
+                        )
+                    } else {
+                        HomeScreen(
+                            onAddRequest = { /* handled in dialog submit */ },
+                            onProfileClick = { showProfileScreen.value = true },
+                            onSubmitRequest = { request, selectedLat, selectedLng ->
                             lifecycleScope.launch(Dispatchers.IO) {
                                 // Ensure we are signed in before attempting Firestore write
                                 if (Firebase.auth.currentUser == null) {
@@ -215,28 +339,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun ensureLocationPermission() {
-        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (fine || coarse) {
-            fetchLastLocation()
-        } else {
-            locationPermissionLauncher.launch(arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ))
-        }
-    }
-
-    private fun fetchLastLocation() {
-        fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
-            if (loc != null) {
-                lastLat = loc.latitude
-                lastLng = loc.longitude
-            }
-        }
-    }
-}
+}}
 
 //@Preview(showBackground = true, showSystemUi = true)
 //@Composable
