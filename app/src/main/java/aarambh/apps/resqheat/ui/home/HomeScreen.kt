@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -21,6 +24,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.BottomSheetScaffold
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.rememberBottomSheetScaffoldState
+import androidx.compose.material3.rememberStandardBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import aarambh.apps.resqheat.model.Request
 import aarambh.apps.resqheat.model.SafeShelter
@@ -79,11 +90,21 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.clickable
 import android.content.Intent
 import android.net.Uri
 import aarambh.apps.resqheat.utils.NotificationHelper
+import aarambh.apps.resqheat.utils.AppConstants
 import aarambh.apps.resqheat.model.RequestStatus
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import aarambh.apps.resqheat.ui.components.RequestCard
+import aarambh.apps.resqheat.ui.components.PriorityBadge
+import aarambh.apps.resqheat.ui.components.StatusChip
+import aarambh.apps.resqheat.ui.components.TypeChip
+import aarambh.apps.resqheat.ui.components.EmptyState
+import aarambh.apps.resqheat.ui.components.LoadingState
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.text.input.KeyboardType
@@ -99,7 +120,8 @@ private class RequestClusterItem(
     val requestId: String,
     private val latLng: LatLng,
     private val titleText: String,
-    private val snippetText: String?
+    private val snippetText: String?,
+    val status: RequestStatus
 ) : ClusterItem {
     override fun getPosition(): LatLng = latLng
     override fun getTitle(): String = titleText
@@ -107,310 +129,152 @@ private class RequestClusterItem(
     override fun getZIndex(): Float? = null
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onAddRequest: () -> Unit,
     onSubmitRequest: (Request, Double?, Double?) -> Unit,
     role: UserRole? = null,
     onProfileClick: () -> Unit = {},
+    viewModel: HomeViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+    
+    // Get current user ID
+    val currentUid = Firebase.auth.currentUser?.uid
+    
+    // Collect state from ViewModel
+    val requests by viewModel.requests.collectAsStateWithLifecycle()
+    val shelters by viewModel.shelters.collectAsStateWithLifecycle()
+    val selectedRequestType by viewModel.selectedRequestType.collectAsStateWithLifecycle()
+    val mineOnly by viewModel.mineOnly.collectAsStateWithLifecycle()
+    val createRequestState by viewModel.createRequestState.collectAsStateWithLifecycle()
+    val requestActionState by viewModel.requestActionState.collectAsStateWithLifecycle()
+    
+    // NGO filters - collect these so they trigger recomposition
+    val selectedPriority by viewModel.selectedPriority.collectAsStateWithLifecycle()
+    val selectedStatus by viewModel.selectedStatus.collectAsStateWithLifecycle()
+    
+    // Local UI state
     var showDialog by remember { mutableStateOf(false) }
     var selectedLatLng by remember { mutableStateOf<LatLng?>(null) }
-    // NGO: marker click dialog state (hoisted)
     var activeRequest by remember { mutableStateOf<Request?>(null) }
     var showRequestDialog by remember { mutableStateOf(false) }
-    // Safe shelter dialog state
     var activeShelter by remember { mutableStateOf<SafeShelter?>(null) }
     var showShelterDialog by remember { mutableStateOf(false) }
+    var clickedRequestId by remember { mutableStateOf<String?>(null) }
+    var showFilterDialog by remember { mutableStateOf(false) }
+    
+    // Store last location for request creation
+    val lastLat = remember { mutableStateOf<Double?>(null) }
+    val lastLng = remember { mutableStateOf<Double?>(null) }
+    
+    // Start listening when role is available
+    LaunchedEffect(role) {
+        if (role != null) {
+            viewModel.startListening(context, role)
+        }
+    }
+    
+    // Snackbar host for error messages
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    
+    // Handle create request state
+    LaunchedEffect(createRequestState) {
+        when (val state = createRequestState) {
+            is aarambh.apps.resqheat.ui.common.UiState.Success -> {
+                showDialog = false
+                snackbarHostState.showSnackbar("Request submitted successfully")
+                viewModel.clearCreateRequestState()
+            }
+            is aarambh.apps.resqheat.ui.common.UiState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                viewModel.clearCreateRequestState()
+            }
+            else -> {}
+        }
+    }
+    
+    // Handle request action state
+    LaunchedEffect(requestActionState) {
+        when (val state = requestActionState) {
+            is aarambh.apps.resqheat.ui.common.UiState.Success -> {
+                showRequestDialog = false
+                snackbarHostState.showSnackbar("Action completed successfully")
+                viewModel.clearRequestActionState()
+            }
+            is aarambh.apps.resqheat.ui.common.UiState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                viewModel.clearRequestActionState()
+            }
+            else -> {}
+        }
+    }
 
-    Scaffold(
-        floatingActionButton = {
-            val canCreate = role != UserRole.NGO_ORG
-            if (canCreate) {
-                FloatingActionButton(onClick = { showDialog = true }) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = "Add Request")
+    // Get filtered requests from ViewModel
+    // Include NGO filters (selectedPriority, selectedStatus) in dependencies so it recomputes when filters change
+    val visibleRequests = remember(requests, mineOnly, selectedRequestType, selectedPriority, selectedStatus, role) {
+        viewModel.getFilteredRequests()
+    }
+    
+    // Get sorted requests for NGO (with user location for distance sorting)
+    val sortedRequests = remember(visibleRequests, role, viewModel.sortOrder.value, viewModel.userLocation.value) {
+        if (role == UserRole.NGO_ORG) {
+            viewModel.getSortedRequests(visibleRequests, viewModel.userLocation.value)
+        } else {
+            visibleRequests
+        }
+    }
+    
+    // Calculate 1/4 of screen height for bottom sheet peek height
+    val configuration = LocalConfiguration.current
+    val screenHeight = configuration.screenHeightDp.dp
+    val quarterScreenHeight = screenHeight / 4
+    
+    // Bottom sheet state - set to PartiallyExpanded initially and prevent hiding completely
+    val bottomSheetState = rememberStandardBottomSheetState(
+        initialValue = SheetValue.PartiallyExpanded,
+        skipHiddenState = true  // Prevent hiding completely
+    )
+    val scaffoldState = rememberBottomSheetScaffoldState(
+        bottomSheetState = bottomSheetState
+    )
+    
+    // Coroutine scope for bottom sheet operations
+    val scope = rememberCoroutineScope()
+    
+    // Callback to handle cluster item clicks - captured for use in MapEffect
+    val onClusterItemClick: (String) -> Unit = remember {
+        { requestId: String ->
+            clickedRequestId = requestId
+        }
+    }
+    
+    // Remember previous ClusterManager to clean it up properly
+    val previousClusterManagerRef = remember { 
+        androidx.compose.runtime.mutableStateOf<ClusterManager<RequestClusterItem>?>(null) 
+    }
+    
+    // Handle clicked request from map marker
+    LaunchedEffect(clickedRequestId, visibleRequests) {
+        clickedRequestId?.let { requestId ->
+            val req = visibleRequests.firstOrNull { request -> request.id == requestId }
+            if (req != null) {
+                activeRequest = req
+                showRequestDialog = true
+                // Expand bottom sheet
+                scope.launch {
+                    bottomSheetState.expand()
                 }
+                clickedRequestId = null // Reset
             }
         }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "ResQHeat",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                IconButton(onClick = onProfileClick) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Profile / Settings"
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            val repo = remember { FirestoreRepository() }
-            val userRepo = remember { UserRepository() }
-            var requests by remember { mutableStateOf<List<Request>>(emptyList()) }
-            var shelters by remember { mutableStateOf<List<SafeShelter>>(emptyList()) }
-            var previousRequests by remember { mutableStateOf<Map<String, Request>>(emptyMap()) }
-            var listenerReg by remember { mutableStateOf<com.google.firebase.firestore.ListenerRegistration?>(null) }
-            var sheltersListenerReg by remember { mutableStateOf<com.google.firebase.firestore.ListenerRegistration?>(null) }
-            
-            // Monitor request changes for notifications (victims and NGOs)
-            val context = LocalContext.current
-            val currentUid = Firebase.auth.currentUser?.uid
-            var isFirstLoad by remember { mutableStateOf(true) }
-            var userLocation by remember { mutableStateOf<LatLng?>(null) }
-            
-            // Helper function to calculate distance in kilometers
-            fun calculateDistance(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
-                val earthRadius = 6371.0 // km
-                val dLat = Math.toRadians(lat2 - lat1)
-                val dLng = Math.toRadians(lng2 - lng1)
-                val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                        Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                        Math.sin(dLng / 2) * Math.sin(dLng / 2)
-                val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-                return earthRadius * c
-            }
-            
-            // Fetch user location for NGOs
-            if (role == UserRole.NGO_ORG) {
-                LaunchedEffect(Unit) {
-                    try {
-                        val fused = LocationServices.getFusedLocationProviderClient(context)
-                        val token = CancellationTokenSource()
-                        val current = fused.getCurrentLocation(LocationPriority.PRIORITY_HIGH_ACCURACY, token.token).await()
-                        if (current != null) {
-                            userLocation = LatLng(current.latitude, current.longitude)
-                        } else {
-                            // Try last known location
-                            val last = fused.lastLocation.await()
-                            if (last != null) {
-                                userLocation = LatLng(last.latitude, last.longitude)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.e("HomeScreen", "Failed to get user location for NGO notifications", e)
-                    }
-                }
-            }
-            
-            DisposableEffect(role, currentUid) {
-                listenerReg = repo.listenToAllRequests(callback = { items -> 
-                    // Check for status changes and show notifications (Victims)
-                    if (role == UserRole.VICTIM && currentUid != null) {
-                        // On first load, just initialize previousRequests without checking for changes
-                        if (isFirstLoad) {
-                            previousRequests = items.associateBy { it.id }
-                            isFirstLoad = false
-                        } else {
-                            items.forEach { newRequest ->
-                                if (newRequest.createdByUid == currentUid) {
-                                    val oldRequest = previousRequests[newRequest.id]
-                                    
-                                    // Debug logging for all status changes
-                                    if (oldRequest != null) {
-                                        if (oldRequest.status != newRequest.status) {
-                                            android.util.Log.d("HomeScreen", "Status change detected for ${newRequest.title}: ${oldRequest.status} -> ${newRequest.status}")
-                                            android.util.Log.d("HomeScreen", "Old NGO: ${oldRequest.claimedByNgoName}, New NGO: ${newRequest.claimedByNgoName}")
-                                        }
-                                    }
-                                    
-                                    // Check if request was just accepted (status changed to BEING_SERVED)
-                                    if (oldRequest != null) {
-                                        val statusChanged = oldRequest.status != newRequest.status
-                                        val nowBeingServed = newRequest.status == RequestStatus.BEING_SERVED
-                                        val wasNotBeingServed = oldRequest.status != RequestStatus.BEING_SERVED
-                                        val hasNgoName = newRequest.claimedByNgoName != null
-                                        
-                                        android.util.Log.d("HomeScreen", "Checking BEING_SERVED for ${newRequest.title}:")
-                                        android.util.Log.d("HomeScreen", "  statusChanged=$statusChanged, nowBeingServed=$nowBeingServed, wasNotBeingServed=$wasNotBeingServed, hasNgoName=$hasNgoName")
-                                        
-                                        // Show notification even if NGO name is null (use generic message)
-                                        if (wasNotBeingServed && nowBeingServed) {
-                                            val ngoName = newRequest.claimedByNgoName ?: "an NGO"
-                                            android.util.Log.d("HomeScreen", "✓✓✓ TRIGGERING BEING_SERVED NOTIFICATION for: ${newRequest.title} by $ngoName")
-                                            NotificationHelper.showRequestAcceptedNotification(
-                                                context = context,
-                                                requestTitle = newRequest.title,
-                                                ngoName = ngoName
-                                            )
-                                        }
-                                    }
-                                    
-                                    // Check if request was just fulfilled (status changed to SERVED)
-                                    if (oldRequest != null && 
-                                        oldRequest.status != RequestStatus.SERVED && 
-                                        newRequest.status == RequestStatus.SERVED) {
-                                        android.util.Log.d("HomeScreen", "✓ Triggering SERVED notification for: ${newRequest.title}")
-                                        NotificationHelper.showRequestFulfilledNotification(
-                                            context = context,
-                                            requestTitle = newRequest.title
-                                        )
-                                    }
-                                }
-                            }
-                            previousRequests = items.associateBy { it.id }
-                        }
-                    } else if (role == UserRole.NGO_ORG) {
-                        // NGO notifications: New requests and high-priority requests nearby
-                        if (isFirstLoad) {
-                            previousRequests = items.associateBy { it.id }
-                            isFirstLoad = false
-                        } else {
-                            items.forEach { newRequest ->
-                                val oldRequest = previousRequests[newRequest.id]
-                                
-                                // Check if this is a new request (not in previousRequests)
-                                if (oldRequest == null && newRequest.status == RequestStatus.NOT_SERVED) {
-                                    // Check if request is in user's area (within 50km radius)
-                                    val isNearby = userLocation?.let { userLoc ->
-                                        val distance = calculateDistance(
-                                            userLoc.latitude, userLoc.longitude,
-                                            newRequest.lat, newRequest.lng
-                                        )
-                                        distance <= 50.0 // 50km radius
-                                    } ?: true // If location not available, show notification anyway
-                                    
-                                    if (isNearby) {
-                                        val requestType = newRequest.type.name.lowercase().replaceFirstChar { it.uppercase() }
-                                        android.util.Log.d("HomeScreen", "✓ New request notification for NGO: ${newRequest.title}")
-                                        NotificationHelper.showNewRequestNotification(
-                                            context = context,
-                                            requestTitle = newRequest.title,
-                                            requestType = requestType
-                                        )
-                                    }
-                                }
-                                
-                                // Check for high-priority requests nearby
-                                if (newRequest.status == RequestStatus.NOT_SERVED && 
-                                    newRequest.priority == Priority.HIGH) {
-                                    val isNearby = userLocation?.let { userLoc ->
-                                        val distance = calculateDistance(
-                                            userLoc.latitude, userLoc.longitude,
-                                            newRequest.lat, newRequest.lng
-                                        )
-                                        distance <= 50.0 // 50km radius
-                                    } ?: true // If location not available, show notification anyway
-                                    
-                                    if (isNearby) {
-                                        // Check if we haven't already notified for this request
-                                        val wasAlreadyHighPriority = oldRequest?.priority == Priority.HIGH
-                                        if (!wasAlreadyHighPriority || oldRequest == null) {
-                                            val requestType = newRequest.type.name.lowercase().replaceFirstChar { it.uppercase() }
-                                            android.util.Log.d("HomeScreen", "✓ High priority request notification for NGO: ${newRequest.title}")
-                                            NotificationHelper.showHighPriorityRequestNotification(
-                                                context = context,
-                                                requestTitle = newRequest.title,
-                                                requestType = requestType
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            previousRequests = items.associateBy { it.id }
-                        }
-                    } else {
-                        // For other roles or if no UID, just update requests without notification logic
-                        previousRequests = items.associateBy { it.id }
-                    }
-                    requests = items
-                })
-                sheltersListenerReg = repo.listenToAllShelters(
-                    callback = { items -> 
-                        android.util.Log.d("HomeScreen", "Received ${items.size} shelters from Firestore")
-                        items.forEach { shelter ->
-                            android.util.Log.d("HomeScreen", "Shelter: ${shelter.name} at (${shelter.lat}, ${shelter.lng}), active: ${shelter.isActive}")
-                        }
-                        shelters = items
-                    },
-                    onError = { e ->
-                        android.util.Log.e("HomeScreen", "Error listening to shelters", e)
-                    }
-                )
-                onDispose {
-                    listenerReg?.remove()
-                    listenerReg = null
-                    sheltersListenerReg?.remove()
-                    sheltersListenerReg = null
-                }
-            }
-            
-
-            // Victim-only: Mine only filter
-            var mineOnly by remember { mutableStateOf(false) }
-            if (role == UserRole.VICTIM) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(text = "Mine only", style = MaterialTheme.typography.bodyMedium)
-                    Switch(checked = mineOnly, onCheckedChange = { mineOnly = it })
-                }
-            }
-
-            // NGO-only: Rescue/Resource toggle filter
-            var selectedRequestType by remember { mutableStateOf<RequestType?>(null) }
-            if (role == UserRole.NGO_ORG) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilterChip(
-                        selected = selectedRequestType == RequestType.RESCUE,
-                        onClick = { 
-                            selectedRequestType = if (selectedRequestType == RequestType.RESCUE) null else RequestType.RESCUE
-                        },
-                        label = { Text("Rescue") }
-                    )
-                    FilterChip(
-                        selected = selectedRequestType == RequestType.RESOURCE,
-                        onClick = { 
-                            selectedRequestType = if (selectedRequestType == RequestType.RESOURCE) null else RequestType.RESOURCE
-                        },
-                        label = { Text("Resource") }
-                    )
-                }
-            }
-
-            val visibleRequests = remember(requests, mineOnly, currentUid, role, selectedRequestType) {
-                var filtered = requests
-                
-                // Filter by request type for NGOs
-                if (role == UserRole.NGO_ORG && selectedRequestType != null) {
-                    filtered = filtered.filter { it.type == selectedRequestType }
-                }
-                
-                // Filter by "mine only" for victims
-                if (role == UserRole.VICTIM && mineOnly && currentUid != null) {
-                    filtered = filtered.filter { it.createdByUid == currentUid }
-                }
-                
-                filtered
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Persisted camera state
-            var savedLat by rememberSaveable { mutableStateOf(20.5937) }
-            var savedLng by rememberSaveable { mutableStateOf(78.9629) }
-            var savedZoom by rememberSaveable { mutableStateOf(4f) }
+    }
+    
+    // Persisted camera state
+    var savedLat by rememberSaveable { mutableStateOf(AppConstants.DEFAULT_MAP_LAT) }
+    var savedLng by rememberSaveable { mutableStateOf(AppConstants.DEFAULT_MAP_LNG) }
+    var savedZoom by rememberSaveable { mutableStateOf(AppConstants.INITIAL_MAP_ZOOM) }
             val cameraPositionState = rememberCameraPositionState {
                 position = CameraPosition.fromLatLngZoom(LatLng(savedLat, savedLng), savedZoom)
             }
@@ -418,13 +282,22 @@ fun HomeScreen(
             // Try to center on current location only on first run when no manual position saved
             LaunchedEffect(context) {
                 try {
-                    if (savedZoom <= 4f + 0.01f) {
+            if (savedZoom <= AppConstants.INITIAL_MAP_ZOOM + 0.01f) {
                         val fused = LocationServices.getFusedLocationProviderClient(context)
                         val token = CancellationTokenSource()
                         val current = fused.getCurrentLocation(LocationPriority.PRIORITY_HIGH_ACCURACY, token.token).await()
                         if (current != null) {
                             val latLng = LatLng(current.latitude, current.longitude)
-                            cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 14f)
+                    lastLat.value = current.latitude
+                    lastLng.value = current.longitude
+                    cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, AppConstants.DEFAULT_MAP_ZOOM)
+                } else {
+                    // Try last known location
+                    val last = fused.lastLocation.await()
+                    if (last != null) {
+                        lastLat.value = last.latitude
+                        lastLng.value = last.longitude
+                    }
                         }
                     }
                 } catch (_: Exception) {
@@ -447,52 +320,109 @@ fun HomeScreen(
             val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
             val canShowMyLocation = hasFine || hasCoarse
 
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetContent = {
+            RequestListBottomSheet(
+                visibleRequests = if (role == UserRole.NGO_ORG) sortedRequests else visibleRequests,
+                role = role,
+                currentUid = currentUid,
+                mineOnly = mineOnly,
+                viewModel = viewModel,
+                onRequestClick = { request ->
+                    activeRequest = request
+                    showRequestDialog = true
+                },
+                onFilterClick = { showFilterDialog = true }
+            )
+        },
+        sheetPeekHeight = quarterScreenHeight,
+        sheetDragHandle = {
+            BottomSheetDefaults.DragHandle()
+        },
+        snackbarHost = { androidx.compose.material3.SnackbarHost(hostState = snackbarHostState) }
+    ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Full screen map
             GoogleMap(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(300.dp),
+                modifier = Modifier.fillMaxSize(),
                 cameraPositionState = cameraPositionState,
                 properties = MapProperties(isMyLocationEnabled = canShowMyLocation),
                 uiSettings = MapUiSettings(
-                    zoomControlsEnabled = false,
-                    myLocationButtonEnabled = canShowMyLocation
+                    zoomControlsEnabled = true,
+                    myLocationButtonEnabled = false, // Disable default button, using custom one
+                    zoomGesturesEnabled = true,
+                    scrollGesturesEnabled = true,
+                    rotationGesturesEnabled = true
                 ),
-                onMapLongClick = { latLng ->
+                onMapLongClick = if (role != UserRole.NGO_ORG) {
+                    { latLng ->
                     selectedLatLng = latLng
+                    }
+                } else {
+                    { }
                 }
             ) {
-                // Selected pin
+                // Selected pin (only for victims)
+                if (role != UserRole.NGO_ORG) {
                 selectedLatLng?.let { latLng ->
                     Marker(
                         state = MarkerState(position = latLng),
                         title = "Selected location"
                     )
+                    }
                 }
 
                 // Clustered markers for visible requests
-                MapEffect(visibleRequests, role) { map ->
+                // Key based on visible request IDs - when filters change, this changes and recreates ClusterManager
+                val requestsKey = remember(visibleRequests) {
+                    visibleRequests.map { it.id }.sorted().joinToString(",")
+                }
+                
+                MapEffect(requestsKey, role, onClusterItemClick) { map ->
+                    // Clear listeners first to detach previous ClusterManager
+                    map.setOnCameraIdleListener(null)
+                    map.setOnMarkerClickListener(null)
+                    
+                    // IMPORTANT: Clear all markers to prevent duplication
+                    // This removes markers from the previous ClusterManager
+                    // Compose markers (shelters, selected location) will be automatically re-rendered
+                    map.clear()
+                    
+                    // Create new ClusterManager
                     val clusterManager = ClusterManager<RequestClusterItem>(context, map)
-                    clusterManager.clearItems()
-                    val items = visibleRequests.map { r ->
-                        RequestClusterItem(
-                            r.id,
-                            LatLng(r.lat, r.lng),
-                            r.title,
-                            r.notes
-                        )
+                    previousClusterManagerRef.value = clusterManager
+                    
+                    // Custom renderer to set marker colors and translucency based on status
+                    val renderer = object : com.google.maps.android.clustering.view.DefaultClusterRenderer<RequestClusterItem>(context, map, clusterManager) {
+                        override fun onBeforeClusterItemRendered(item: RequestClusterItem, markerOptions: com.google.android.gms.maps.model.MarkerOptions) {
+                            super.onBeforeClusterItemRendered(item, markerOptions)
+                            if (item.status == RequestStatus.SERVED) {
+                                markerOptions.icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
+                                markerOptions.alpha(0.5f)
+                            } else {
+                                markerOptions.alpha(1.0f)
+                            }
+                        }
                     }
-                    clusterManager.addItems(items)
+                    clusterManager.renderer = renderer
+                    
                     clusterManager.setOnClusterItemClickListener { item ->
-                        // Make markers clickable for all users
-                        val req = visibleRequests.firstOrNull { it.id == item.requestId }
-                        if (req != null) {
-                            showRequestDialog = false
-                            activeRequest = req
-                            showRequestDialog = true
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            onClusterItemClick(item.requestId)
                         }
                         true
                     }
+                    
+                    // Add items from visibleRequests
+                    clusterManager.clearItems()
+                    val items = visibleRequests.map { r ->
+                        RequestClusterItem(r.id, LatLng(r.lat, r.lng), r.title, r.notes, r.status)
+                    }
+                    clusterManager.addItems(items)
                     clusterManager.cluster()
+                    
+                    // Set listeners after clustering
                     map.setOnCameraIdleListener(clusterManager)
                     map.setOnMarkerClickListener(clusterManager)
                 }
@@ -500,7 +430,10 @@ fun HomeScreen(
                 // Safe shelter markers (blue icons)
                 android.util.Log.d("HomeScreen", "Rendering ${shelters.size} shelters on map")
                 shelters.forEach { shelter ->
-                    if (shelter.lat != 0.0 && shelter.lng != 0.0 && shelter.isActive) {
+                    // Validate coordinates using threshold to avoid invalid (0.0, 0.0) locations
+                    val hasValidCoordinates = kotlin.math.abs(shelter.lat) >= AppConstants.INVALID_COORDINATE_THRESHOLD &&
+                                             kotlin.math.abs(shelter.lng) >= AppConstants.INVALID_COORDINATE_THRESHOLD
+                    if (hasValidCoordinates && shelter.isActive) {
                         android.util.Log.d("HomeScreen", "Adding marker for: ${shelter.name} at (${shelter.lat}, ${shelter.lng})")
                         Marker(
                             state = MarkerState(position = LatLng(shelter.lat, shelter.lng)),
@@ -521,12 +454,15 @@ fun HomeScreen(
                 // Heatmap overlay weighted by priority
                 if (visibleRequests.isNotEmpty()) {
                     val weightedPoints = visibleRequests.mapNotNull { r ->
-                        if (r.lat == 0.0 && r.lng == 0.0) return@mapNotNull null
+                        // Validate coordinates using threshold
+                        val hasValidCoordinates = kotlin.math.abs(r.lat) >= AppConstants.INVALID_COORDINATE_THRESHOLD &&
+                                                 kotlin.math.abs(r.lng) >= AppConstants.INVALID_COORDINATE_THRESHOLD
+                        if (!hasValidCoordinates) return@mapNotNull null
                         val latLng = LatLng(r.lat, r.lng)
                         val weight = when (r.priority) {
-                            aarambh.apps.resqheat.model.Priority.HIGH -> 3.0
-                            aarambh.apps.resqheat.model.Priority.MEDIUM -> 2.0
-                            aarambh.apps.resqheat.model.Priority.LOW -> 1.0
+                            aarambh.apps.resqheat.model.Priority.HIGH -> AppConstants.HIGH_PRIORITY_WEIGHT
+                            aarambh.apps.resqheat.model.Priority.MEDIUM -> AppConstants.MEDIUM_PRIORITY_WEIGHT
+                            aarambh.apps.resqheat.model.Priority.LOW -> AppConstants.LOW_PRIORITY_WEIGHT
                         }
                         WeightedLatLng(latLng, weight)
                     }
@@ -539,186 +475,165 @@ fun HomeScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Recenter + selection controls
-            val scope = rememberCoroutineScope()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (selectedLatLng != null) {
-                    androidx.compose.material3.OutlinedButton(onClick = { selectedLatLng = null }) {
-                        Text("Clear pin")
-                    }
-                }
-            }
-
-            Text(text = "Requests", style = MaterialTheme.typography.titleMedium)
-            Text(text = "${visibleRequests.size} total", modifier = Modifier.padding(bottom = 8.dp))
-
-            // Sorted list by priority (High -> Low) - NGO only
-            if (role == UserRole.NGO_ORG) {
-                val sortedByPriority = remember(visibleRequests) {
-                    visibleRequests.sortedByDescending {
-                        when (it.priority) {
-                            aarambh.apps.resqheat.model.Priority.HIGH -> 3
-                            aarambh.apps.resqheat.model.Priority.MEDIUM -> 2
-                            aarambh.apps.resqheat.model.Priority.LOW -> 1
+            // Top bar overlay
+            TopBarOverlay(
+                role = role,
+                mineOnly = mineOnly,
+                selectedRequestType = selectedRequestType,
+                requestCount = visibleRequests.size,
+                onProfileClick = onProfileClick,
+                onMineOnlyChange = { viewModel.setMineOnlyFilter(it) },
+                onRequestTypeFilterChange = { viewModel.setRequestTypeFilter(it) },
+                onBottomSheetToggle = {
+                    scope.launch {
+                        // Toggle between expanded and partially expanded (1/4 screen)
+                        if (bottomSheetState.currentValue == SheetValue.PartiallyExpanded) {
+                            bottomSheetState.expand()
+                        } else {
+                            bottomSheetState.partialExpand()
                         }
                     }
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(sortedByPriority) { req ->
-                        Row(
+                },
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+            
+                    // Clear pin button overlay (only for victims)
+                    if (role != UserRole.NGO_ORG && selectedLatLng != null) {
+                        androidx.compose.material3.Card(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp)
-                                .clickable {
-                                    showRequestDialog = false
-                                    activeRequest = req
-                                    showRequestDialog = true
-                                },
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .align(Alignment.TopCenter)
+                                .padding(top = 180.dp, start = 16.dp, end = 16.dp),
+                            colors = androidx.compose.material3.CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
                         ) {
-                            Text(text = req.title, style = MaterialTheme.typography.bodyMedium)
-                            val p = when (req.priority) {
-                                aarambh.apps.resqheat.model.Priority.HIGH -> "High"
-                                aarambh.apps.resqheat.model.Priority.MEDIUM -> "Medium"
-                                aarambh.apps.resqheat.model.Priority.LOW -> "Low"
-                            }
-                            Text(text = p, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Divider()
-                    }
-                }
-            }
-
-            // Victim list view - shows own requests with NGO info for BEING_SERVED
-            if (role == UserRole.VICTIM && currentUid != null) {
-                val myRequests = remember(visibleRequests, currentUid) {
-                    visibleRequests.filter { it.createdByUid == currentUid }
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(myRequests) { req ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp)
-                                .clickable {
-                                    activeRequest = req
-                                    showRequestDialog = true
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            androidx.compose.material3.OutlinedButton(
+                                onClick = { selectedLatLng = null },
+                                modifier = Modifier.padding(8.dp)
                             ) {
-                                Text(text = req.title, style = MaterialTheme.typography.bodyMedium)
-                                val statusText = when (req.status) {
-                                    RequestStatus.NOT_SERVED -> "Pending"
-                                    RequestStatus.BEING_SERVED -> "In Progress"
-                                    RequestStatus.SERVED -> "Completed"
-                                }
-                                Text(text = statusText, style = MaterialTheme.typography.bodySmall)
-                            }
-                            
-                            // Show NGO info for BEING_SERVED requests
-                            if (req.status == RequestStatus.BEING_SERVED) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 8.dp, top = 4.dp)
-                                ) {
-                                    if (req.claimedByNgoName != null) {
-                                        Text(
-                                            text = "NGO: ${req.claimedByNgoName}",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                    if (req.claimedByNgoPhone != null) {
-                                        Text(
-                                            text = "Contact: ${req.claimedByNgoPhone}",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                    if (req.eta != null) {
-                                        Text(
-                                            text = "ETA: ${req.eta}",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                }
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.padding(start = 8.dp))
+                                Text("Clear selected location")
                             }
                         }
-                        Divider()
                     }
+            
+            // Location button (GPS) - Left side, above bottom sheet
+            if (canShowMyLocation) {
+                FloatingActionButton(
+                    onClick = {
+                        // Center map on current location
+                        scope.launch {
+                            try {
+                                val fused = LocationServices.getFusedLocationProviderClient(context)
+                                val token = CancellationTokenSource()
+                                val current = fused.getCurrentLocation(LocationPriority.PRIORITY_HIGH_ACCURACY, token.token).await()
+                                if (current != null) {
+                                    val latLng = LatLng(current.latitude, current.longitude)
+                                    lastLat.value = current.latitude
+                                    lastLng.value = current.longitude
+                                    cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, AppConstants.DEFAULT_MAP_ZOOM)
+                                } else {
+                                    // Try last known location
+                                    val last = fused.lastLocation.await()
+                                    if (last != null) {
+                                        val latLng = LatLng(last.latitude, last.longitude)
+                                        lastLat.value = last.latitude
+                                        lastLng.value = last.longitude
+                                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, AppConstants.DEFAULT_MAP_ZOOM)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("HomeScreen", "Failed to get location", e)
+                            }
+                        }
+                    },
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 16.dp, bottom = quarterScreenHeight + 16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = "My Location",
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            
+            // Floating Action Button (Add Request) - Right side, above bottom sheet
+            val canCreate = role != UserRole.NGO_ORG
+            if (canCreate) {
+                FloatingActionButton(
+                    onClick = { showDialog = true },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = quarterScreenHeight + 16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Add Request",
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         }
     }
-
+    
+    // Dialogs (outside scaffold but inside composable)
     if (showDialog) {
         RequestFormDialog(
             onDismiss = { showDialog = false },
             onSubmit = { request ->
                 val lat = selectedLatLng?.latitude
                 val lng = selectedLatLng?.longitude
-                onSubmitRequest(request, lat, lng)
-                showDialog = false
+                viewModel.createRequest(request, lat, lng, lastLat.value, lastLng.value)
             }
         )
     }
 
     // Request details dialog (for all users)
-    val scope = rememberCoroutineScope()
-    val repo = remember { FirestoreRepository() }
-    val userRepo = remember { UserRepository() }
-    val currentUid = Firebase.auth.currentUser?.uid ?: ""
-    
     val req = activeRequest
     if (req != null && showRequestDialog) {
         RequestDetailsDialog(
             request = req,
             role = role,
             onDismiss = { showRequestDialog = false },
-            onClaim = { requestId ->
-                scope.launch {
-                    runCatching {
-                        val profile = userRepo.getUserProfile(currentUid)
-                        android.util.Log.d("HomeScreen", "Claiming request - Profile: ${profile?.ngoOrgName}, Phone: ${profile?.ngoOrgPhone}")
-                        repo.claimRequest(
-                            requestId,
-                            currentUid,
-                            profile?.ngoOrgName,
-                            profile?.ngoOrgPhone,
-                            null // ETA can be set later if needed
-                        )
-                        android.util.Log.d("HomeScreen", "Claim request completed for $requestId")
-                    }
-                    showRequestDialog = false
-                }
+            onClaim = { requestId, eta ->
+                viewModel.claimRequest(requestId, eta)
             },
             onComplete = { requestId, estimatedDaysCovered ->
-                scope.launch {
-                    runCatching { 
-                        repo.completeRequest(requestId, estimatedDaysCovered)
-                    }
-                    showRequestDialog = false
-                }
+                viewModel.completeRequest(requestId, estimatedDaysCovered)
             }
+        )
+    }
+    
+    // Filter dialog for NGO (outside bottom sheet)
+    if (showFilterDialog && role == UserRole.NGO_ORG) {
+        val selectedPriority by viewModel.selectedPriority.collectAsStateWithLifecycle()
+        val selectedStatus by viewModel.selectedStatus.collectAsStateWithLifecycle()
+        val sortOrder by viewModel.sortOrder.collectAsStateWithLifecycle()
+        
+        NgoFilterDialog(
+            selectedPriority = selectedPriority,
+            selectedStatus = selectedStatus,
+            sortOrder = sortOrder,
+            onPriorityChange = { viewModel.setPriorityFilter(it) },
+            onStatusChange = { viewModel.setStatusFilter(it) },
+            onSortOrderChange = { viewModel.setSortOrder(it) },
+            onClearFilters = { viewModel.clearNgoFilters() },
+            onDismiss = { showFilterDialog = false }
         )
     }
 
     // Safe Shelter Details Dialog
-    val shelterContext = LocalContext.current
     val shelter = activeShelter
     if (shelter != null && showShelterDialog) {
         AlertDialog(
@@ -761,12 +676,12 @@ fun HomeScreen(
                     val mapIntent = Intent(Intent.ACTION_VIEW, uri)
                     mapIntent.setPackage("com.google.android.apps.maps")
                     try {
-                        shelterContext.startActivity(mapIntent)
+                        context.startActivity(mapIntent)
                     } catch (e: Exception) {
                         // Fallback to web maps if app not installed
                         val webUri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${shelter.lat},${shelter.lng}")
                         val webIntent = Intent(Intent.ACTION_VIEW, webUri)
-                        shelterContext.startActivity(webIntent)
+                        context.startActivity(webIntent)
                     }
                 }) {
                     Text("Get Directions")
@@ -786,26 +701,83 @@ private fun RequestDetailsDialog(
     request: Request,
     role: UserRole?,
     onDismiss: () -> Unit,
-    onClaim: (String) -> Unit,
+    onClaim: (String, String) -> Unit,
     onComplete: (String, Int?) -> Unit
 ) {
     val userRepo = remember { UserRepository() }
     val currentUid = Firebase.auth.currentUser?.uid
-    val uid = currentUid ?: ""
+    val context = LocalContext.current
     
     // Fetch victim profile
     var victimProfile by remember { mutableStateOf<UserProfile?>(null) }
     LaunchedEffect(request.createdByUid) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         victimProfile = userRepo.getUserProfile(request.createdByUid)
+        }
+    }
+    
+    // For NGO role: Calculate distance from device location to request
+    var distanceKm by remember { mutableStateOf<Double?>(null) }
+    var isLoadingDistance by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(request, role) {
+        if (role == UserRole.NGO_ORG) {
+            isLoadingDistance = true
+            try {
+                val fused = LocationServices.getFusedLocationProviderClient(context)
+                val token = CancellationTokenSource()
+                val current = fused.getCurrentLocation(LocationPriority.PRIORITY_HIGH_ACCURACY, token.token).await()
+                if (current != null) {
+                    // Calculate distance using haversine formula
+                    val lat1 = Math.toRadians(current.latitude)
+                    val lat2 = Math.toRadians(request.lat)
+                    val deltaLat = Math.toRadians(request.lat - current.latitude)
+                    val deltaLng = Math.toRadians(request.lng - current.longitude)
+                    
+                    val a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+                            Math.cos(lat1) * Math.cos(lat2) *
+                            Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2)
+                    val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+                    val distance = AppConstants.EARTH_RADIUS_KM * c
+                    
+                    distanceKm = distance
+                } else {
+                    // Try last known location
+                    val last = fused.lastLocation.await()
+                    if (last != null) {
+                        val lat1 = Math.toRadians(last.latitude)
+                        val lat2 = Math.toRadians(request.lat)
+                        val deltaLat = Math.toRadians(request.lat - last.latitude)
+                        val deltaLng = Math.toRadians(request.lng - last.longitude)
+                        
+                        val a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+                                Math.cos(lat1) * Math.cos(lat2) *
+                                Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2)
+                        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+                        val distance = AppConstants.EARTH_RADIUS_KM * c
+                        
+                        distanceKm = distance
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("RequestDetailsDialog", "Failed to get location for distance", e)
+            } finally {
+                isLoadingDistance = false
+            }
+        }
     }
     
     // For NGOs: check if they can claim or complete
     val canClaim = role == UserRole.NGO_ORG && request.status == RequestStatus.NOT_SERVED
     val canComplete = role == UserRole.NGO_ORG && 
                      request.status != RequestStatus.SERVED && 
-                     request.claimedBy == uid
+                     request.claimedBy == currentUid
     
-    // estimatedDaysCovered input (only for completing)
+    // ETA input (for claiming - both RESCUE and RESOURCE)
+    var etaHours by remember { mutableStateOf("") }
+    var etaError by remember { mutableStateOf<String?>(null) }
+    
+    // estimatedDaysCovered input (only for completing RESOURCE requests)
     var estimatedDaysCovered by remember { mutableStateOf("") }
     var estimatedDaysCoveredError by remember { mutableStateOf(false) }
     
@@ -867,7 +839,68 @@ private fun RequestDetailsDialog(
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
                 
-                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                // Distance (for NGO role only)
+                if (role == UserRole.NGO_ORG) {
+                    when {
+                        isLoadingDistance -> {
+                            Text(
+                                text = "Distance: Calculating...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        distanceKm != null -> {
+                            val distanceText = if (distanceKm!! < 1.0) {
+                                String.format("%.0f m", distanceKm!! * 1000)
+                            } else {
+                                String.format("%.1f km", distanceKm!!)
+                            }
+                            Text(
+                                text = "Distance: $distanceText",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        else -> {
+                            Text(
+                                text = "Distance: Unable to calculate",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                
+                // ETA input (for claiming - both RESCUE and RESOURCE)
+                if (canClaim) {
+                    OutlinedTextField(
+                        value = etaHours,
+                        onValueChange = {
+                            etaHours = it
+                            // Clear error when user starts typing
+                            if (etaError != null) {
+                                val hours = it.toIntOrNull()
+                                if (it.isNotBlank() && (hours == null || hours <= 0)) {
+                                    etaError = "Please enter a valid number of hours (greater than 0)"
+                                } else {
+                                    etaError = null
+                                }
+                            }
+                        },
+                        label = { Text("ETA (Hours)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = etaError != null,
+                        supportingText = etaError?.let { { Text(it) } },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                    )
+                }
                 
                 // Victim Info
                 Text(
@@ -935,9 +968,9 @@ private fun RequestDetailsDialog(
                     }
                 }
                 
-                // Estimated Days Covered input (only when completing)
-                if (canComplete) {
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                // Estimated Days Covered input (only when completing RESOURCE requests)
+                if (canComplete && request.type == RequestType.RESOURCE) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                     OutlinedTextField(
                         value = estimatedDaysCovered,
                         onValueChange = {
@@ -964,8 +997,26 @@ private fun RequestDetailsDialog(
         },
         confirmButton = {
             if (canClaim) {
-                Button(onClick = { onClaim(request.id) }) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            // Validate ETA
+                            val hours = etaHours.toIntOrNull()
+                            if (etaHours.isBlank()) {
+                                etaError = "Please enter ETA in hours"
+                            } else if (hours == null || hours <= 0) {
+                                etaError = "Please enter a valid number of hours (greater than 0)"
+                            } else {
+                                etaError = null
+                                val etaText = "${hours} hour${if (hours != 1) "s" else ""}"
+                                onClaim(request.id, etaText)
+                            }
+                        },
+                        enabled = etaError == null && etaHours.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                     Text("Accept Request")
+                    }
                 }
             } else if (canComplete) {
                 Button(onClick = {

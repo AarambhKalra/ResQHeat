@@ -8,11 +8,22 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import aarambh.apps.resqheat.MainActivity
+import java.util.concurrent.atomic.AtomicInteger
 
 object NotificationHelper {
     private const val CHANNEL_ID = "resqheat_notifications"
     private const val CHANNEL_NAME = "ResQHeat Notifications"
     private const val CHANNEL_DESCRIPTION = "Notifications for request updates and alerts"
+    
+    // Thread-safe notification ID generator
+    private val notificationIdGenerator = AtomicInteger(1000)
+    
+    /**
+     * Generates a unique notification ID
+     */
+    private fun getNextNotificationId(): Int {
+        return notificationIdGenerator.getAndIncrement()
+    }
 
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -55,7 +66,7 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        notificationManager.notify(getNextNotificationId(), notification)
     }
 
     fun showRequestFulfilledNotification(
@@ -85,7 +96,7 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt() + 1, notification)
+        notificationManager.notify(getNextNotificationId(), notification)
     }
 
     fun showAlertNotification(
@@ -115,7 +126,7 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt() + 2, notification)
+        notificationManager.notify(getNextNotificationId(), notification)
     }
 
     fun showNewRequestNotification(
@@ -146,7 +157,7 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt() + 3, notification)
+        notificationManager.notify(getNextNotificationId(), notification)
     }
 
     fun showHighPriorityRequestNotification(
@@ -177,7 +188,7 @@ object NotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt() + 4, notification)
+        notificationManager.notify(getNextNotificationId(), notification)
     }
 }
 

@@ -20,6 +20,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Divider
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import aarambh.apps.resqheat.model.UserProfile
 import aarambh.apps.resqheat.model.UserRole
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.LaunchedEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,38 +40,70 @@ fun ProfileScreen(
     userProfile: UserProfile?,
     onBackClick: () -> Unit,
     onSave: (UserProfile) -> Unit,
-    isLoading: Boolean = false
+    isLoading: Boolean = false,
+    viewModel: ProfileViewModel = viewModel()
 ) {
-    val name = if (userProfile?.role == UserRole.VICTIM) {
-        userProfile.victimName ?: ""
-    } else {
-        userProfile?.ngoOrgName ?: ""
+    // Collect state from ViewModel
+    val profileState by viewModel.userProfile.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateProfileState.collectAsStateWithLifecycle()
+    
+    // Snackbar for error messages
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    
+    // Handle update state
+    LaunchedEffect(updateState) {
+        when (val state = updateState) {
+            is aarambh.apps.resqheat.ui.common.UiState.Success -> {
+                snackbarHostState.showSnackbar("Profile updated successfully")
+                onBackClick()
+                viewModel.clearUpdateProfileState()
+            }
+            is aarambh.apps.resqheat.ui.common.UiState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                viewModel.clearUpdateProfileState()
+            }
+            else -> {}
+        }
     }
     
-    val phone = if (userProfile?.role == UserRole.VICTIM) {
-        userProfile.victimPhone ?: ""
+    // Use ViewModel profile if available, otherwise use passed profile
+    val currentProfile = when (val state = profileState) {
+        is aarambh.apps.resqheat.ui.common.UiState.Success -> state.data
+        else -> userProfile
+    }
+    
+    val name = if (currentProfile?.role == UserRole.VICTIM) {
+        currentProfile.victimName ?: ""
     } else {
-        userProfile?.ngoOrgPhone ?: ""
+        currentProfile?.ngoOrgName ?: ""
+    }
+    
+    val phone = if (currentProfile?.role == UserRole.VICTIM) {
+        currentProfile.victimPhone ?: ""
+    } else {
+        currentProfile?.ngoOrgPhone ?: ""
     }
     
     var editedName by remember { mutableStateOf(name) }
     var editedPhone by remember { mutableStateOf(phone) }
-    var editedAddress by remember { mutableStateOf(userProfile?.address ?: "") }
+    var editedAddress by remember { mutableStateOf(currentProfile?.address ?: "") }
     
     // Update when profile changes
-    androidx.compose.runtime.LaunchedEffect(userProfile) {
-        editedName = if (userProfile?.role == UserRole.VICTIM) {
-            userProfile.victimName ?: ""
+    LaunchedEffect(currentProfile) {
+        editedName = if (currentProfile?.role == UserRole.VICTIM) {
+            currentProfile.victimName ?: ""
         } else {
-            userProfile?.ngoOrgName ?: ""
+            currentProfile?.ngoOrgName ?: ""
         }
-        editedPhone = if (userProfile?.role == UserRole.VICTIM) {
-            userProfile.victimPhone ?: ""
+        editedPhone = if (currentProfile?.role == UserRole.VICTIM) {
+            currentProfile.victimPhone ?: ""
         } else {
-            userProfile?.ngoOrgPhone ?: ""
+            currentProfile?.ngoOrgPhone ?: ""
         }
-        editedAddress = userProfile?.address ?: ""
+        editedAddress = currentProfile?.address ?: ""
     }
+    
+    val isSaving = updateState.isLoading || isLoading
     
     Scaffold(
         topBar = {
@@ -79,7 +115,8 @@ fun ProfileScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { androidx.compose.material3.SnackbarHost(hostState = snackbarHostState) }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -93,13 +130,13 @@ fun ProfileScreen(
                 style = MaterialTheme.typography.titleLarge
             )
             
-            val nameLabel = if (userProfile?.role == UserRole.VICTIM) {
+            val nameLabel = if (currentProfile?.role == UserRole.VICTIM) {
                 "Victim Name"
             } else {
                 "NGO/Org Name"
             }
             
-            val phoneLabel = if (userProfile?.role == UserRole.VICTIM) {
+            val phoneLabel = if (currentProfile?.role == UserRole.VICTIM) {
                 "Victim Phone"
             } else {
                 "NGO/Org Phone"
@@ -110,7 +147,7 @@ fun ProfileScreen(
                 onValueChange = { editedName = it },
                 label = { Text(nameLabel) },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
+                enabled = !isSaving
             )
             
             OutlinedTextField(
@@ -118,7 +155,7 @@ fun ProfileScreen(
                 onValueChange = { editedPhone = it },
                 label = { Text(phoneLabel) },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
+                enabled = !isSaving
             )
             
             OutlinedTextField(
@@ -126,7 +163,7 @@ fun ProfileScreen(
                 onValueChange = { editedAddress = it },
                 label = { Text("Address") },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading,
+                enabled = !isSaving,
                 minLines = 2
             )
             
@@ -136,32 +173,32 @@ fun ProfileScreen(
             
             Button(
                 onClick = {
-                    if (userProfile != null && canSave) {
-                        val updatedProfile = if (userProfile.role == UserRole.VICTIM) {
-                            userProfile.copy(
+                    if (currentProfile != null && canSave) {
+                        val updatedProfile = if (currentProfile.role == UserRole.VICTIM) {
+                            currentProfile.copy(
                                 victimName = editedName.trim(),
                                 victimPhone = editedPhone.trim(),
                                 address = editedAddress.trim().takeIf { it.isNotBlank() },
                                 displayName = editedName.trim()
                             )
                         } else {
-                            userProfile.copy(
+                            currentProfile.copy(
                                 ngoOrgName = editedName.trim(),
                                 ngoOrgPhone = editedPhone.trim(),
                                 address = editedAddress.trim().takeIf { it.isNotBlank() },
                                 displayName = editedName.trim()
                             )
                         }
-                        onSave(updatedProfile)
+                        viewModel.updateProfile(updatedProfile)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = canSave && !isLoading
+                enabled = canSave && !isSaving
             ) {
-                Text(if (isLoading) "Saving..." else "Save Changes")
+                Text(if (isSaving) "Saving..." else "Save Changes")
             }
             
-            if (userProfile != null) {
+            if (currentProfile != null) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Divider()
                 Spacer(modifier = Modifier.height(8.dp))
@@ -172,12 +209,12 @@ fun ProfileScreen(
                 )
                 
                 Text(
-                    text = "Role: ${userProfile.role.name}",
+                    text = "Role: ${currentProfile.role.name}",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 
                 Text(
-                    text = "User ID: ${userProfile.uid.take(8)}...",
+                    text = "User ID: ${currentProfile.uid.take(8)}...",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )

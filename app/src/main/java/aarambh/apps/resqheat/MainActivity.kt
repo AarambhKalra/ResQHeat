@@ -45,6 +45,8 @@ import com.google.firebase.auth.ktx.auth
 import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.withContext
 import aarambh.apps.resqheat.utils.NotificationHelper
+import aarambh.apps.resqheat.utils.ValidationUtils
+import aarambh.apps.resqheat.utils.AppConstants
 import android.os.Build
 
 class MainActivity : ComponentActivity() {
@@ -166,7 +168,6 @@ class MainActivity : ComponentActivity() {
                 val userProfileState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<UserProfile?>(null) }
                 val showRoleDialog = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
                 val showProfileScreen = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-                var isSavingProfile by remember { mutableStateOf(false) }
 
                 androidx.compose.runtime.LaunchedEffect(Unit) {
                     // Ensure auth and load profile; if anything fails, show role dialog
@@ -201,98 +202,32 @@ class MainActivity : ComponentActivity() {
                     if (showProfileScreen.value) {
                         ProfileScreen(
                             userProfile = userProfileState.value,
-                            onBackClick = { showProfileScreen.value = false },
-                            onSave = { updatedProfile ->
+                            onBackClick = { 
+                                showProfileScreen.value = false
+                                // Refresh profile state after update
                                 lifecycleScope.launch(Dispatchers.IO) {
-                                    isSavingProfile = true
-                                    try {
-                                        userRepo.setUserProfile(updatedProfile)
+                                    val uid = Firebase.auth.currentUser?.uid
+                                    if (uid != null) {
+                                        val profile = userRepo.getUserProfile(uid)
                                         withContext(Dispatchers.Main) {
-                                            userProfileState.value = updatedProfile
-                                            isSavingProfile = false
-                                            showProfileScreen.value = false
-                                            snackbarHostState.showSnackbar(
-                                                message = "Profile updated successfully"
-                                            )
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("MainActivity", "Failed to save profile", e)
-                                        withContext(Dispatchers.Main) {
-                                            isSavingProfile = false
-                                            snackbarHostState.showSnackbar(
-                                                message = "Failed to save profile: ${e.message}"
-                                            )
+                                            userProfileState.value = profile
                                         }
                                     }
                                 }
                             },
-                            isLoading = isSavingProfile
+                            onSave = { /* Profile saving is now handled by ProfileViewModel */ },
+                            isLoading = false
                         )
                     } else {
                         HomeScreen(
                             onAddRequest = { /* handled in dialog submit */ },
                             onProfileClick = { showProfileScreen.value = true },
-                            onSubmitRequest = { request, selectedLat, selectedLng ->
-                            lifecycleScope.launch(Dispatchers.IO) {
-                                // Ensure we are signed in before attempting Firestore write
-                                if (Firebase.auth.currentUser == null) {
-                                    try {
-                                        Firebase.auth.signInAnonymously().await()
-                                    } catch (e: Exception) {
-                                        Log.e("MainActivity", "Auth before submit failed", e)
-                                        withContext(Dispatchers.Main) {
-                                            snackbarHostState.showSnackbar(
-                                                message = "Sign-in failed: ${e.message}"
-                                            )
-                                        }
-                                        return@launch
-                                    }
-                                }
-                                val latLngFromSelection = if (selectedLat != null && selectedLng != null) Pair(selectedLat, selectedLng) else null
-                                val token = CancellationTokenSource()
-                                val current = if (latLngFromSelection == null) runCatching {
-                                    fusedLocationClient.getCurrentLocation(
-                                        Priority.PRIORITY_HIGH_ACCURACY,
-                                        token.token
-                                    ).await()
-                                }.getOrNull() else null
-                                val lat = latLngFromSelection?.first ?: current?.latitude ?: lastLat
-                                val lng = latLngFromSelection?.second ?: current?.longitude ?: lastLng
-                                if (lat == null || lng == null) {
-                                    // No location available; inform user and skip save
-                                    withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Location not available. Please try again after granting permission."
-                                        )
-                                    }
-                                    return@launch
-                                }
-                                try {
-                                    val uid = Firebase.auth.currentUser?.uid ?: ""
-                                    repo.createRequest(
-                                        request.copy(
-                                            lat = lat,
-                                            lng = lng,
-                                            createdByUid = uid
-                                        )
-                                    )
-                                    withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Request submitted."
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("MainActivity", "Failed to create request", e)
-                                    withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Failed to submit request: ${e.message}"
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                        role = userProfileState.value?.role
-                    )
+                            onSubmitRequest = { _, _, _ -> 
+                                // Request submission is now handled by HomeViewModel
+                                // This parameter is kept for backward compatibility but not used
+                            },
+                            role = userProfileState.value?.role
+                        )
                 }
 
                 if (showRoleDialog.value) {
@@ -308,11 +243,32 @@ class MainActivity : ComponentActivity() {
                                     }
                                     return@launch
                                 }
+                                // Validate input
+                                val nameValidation = ValidationUtils.validateName(name)
+                                if (!nameValidation.isValid) {
+                                    withContext(Dispatchers.Main) {
+                                        snackbarHostState.showSnackbar(
+                                            message = nameValidation.errorMessage ?: "Invalid name"
+                                        )
+                                    }
+                                    return@launch
+                                }
+                                
+                                val phoneValidation = ValidationUtils.validatePhone(phone)
+                                if (!phoneValidation.isValid) {
+                                    withContext(Dispatchers.Main) {
+                                        snackbarHostState.showSnackbar(
+                                            message = phoneValidation.errorMessage ?: "Invalid phone number"
+                                        )
+                                    }
+                                    return@launch
+                                }
+                                
                                 try {
                                     val profile = if (role == UserRole.VICTIM) {
-                                        UserProfile(uid = uid, role = role, victimName = name, victimPhone = phone, displayName = name)
+                                        UserProfile(uid = uid, role = role, victimName = name.trim(), victimPhone = phone.trim(), displayName = name.trim())
                                     } else {
-                                        UserProfile(uid = uid, role = role, ngoOrgName = name, ngoOrgPhone = phone, displayName = name)
+                                        UserProfile(uid = uid, role = role, ngoOrgName = name.trim(), ngoOrgPhone = phone.trim(), displayName = name.trim())
                                     }
                                     userRepo.setUserProfile(profile)
                                     withContext(Dispatchers.Main) {
